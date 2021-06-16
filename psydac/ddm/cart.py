@@ -110,10 +110,7 @@ class CartDecomposition():
 
         # Know my coordinates in the topology
         self._rank_in_topo = self._comm_cart.Get_rank()
-        self._coords       = self._comm_cart.Get_coords( rank=self._rank_in_topo )
-
-        if reverse_axis is not None:
-            self._coords[reverse_axis] = self._dims[reverse_axis] - self._coords[reverse_axis] - 1
+        self._coords       = self.rank_to_coords(self._rank_in_topo)
 
         # Start/end values of global indices (without ghost regions)
         self._starts = tuple( ( c   *n)//d   for n,d,c in zip( npts, self._dims, self._coords ) )
@@ -242,6 +239,54 @@ class CartDecomposition():
     def coords_exist( self, coords ):
 
         return all( P or (0 <= c < d) for P,c,d in zip( self._periods, coords, self._dims ) )
+    
+    #---------------------------------------------------------------------------
+    def rank_to_coords(self, rank):
+        """
+        Transforms the given rank into coordinates in the cartesian grid.
+
+        Parameters
+        ----------
+        rank : int
+            The given rank.
+
+        Returns
+        -------
+        tuple
+            The coordinates.
+        """
+        assert rank < self._comm_cart.size
+
+        coords       = self._comm_cart.Get_coords( rank=rank )
+
+        if self._reverse_axis is not None:
+            coords[self._reverse_axis] = self._dims[self._reverse_axis] - coords[self._reverse_axis] - 1
+        
+        return coords
+
+    #---------------------------------------------------------------------------
+    def coords_to_rank(self, coords):
+        """
+        Transforms the given coordinates into a rank on the cartesian grid, if possible.
+
+        Parameters
+        ----------
+        coords : tuple | list
+            The given coordinates.
+
+        Returns
+        -------
+        int
+            The rank.
+        """
+        assert self.coords_exist(coords)
+
+        coords = [c%d if p else c for c,p,d in zip(coords, self._periods, self._dims)]
+
+        if self._reverse_axis is not None:
+            coords[self._reverse_axis] = self._dims[self._reverse_axis] - coords[self._reverse_axis] - 1
+
+        return self._comm_cart.Get_rank(rank=coords)
 
     #---------------------------------------------------------------------------
     def get_shift_info( self, direction, disp ):

@@ -154,7 +154,7 @@ class TensorFemSpace( FemSpace ):
         
         bases = [None] * self.ldim
         index = [None] * self.ldim
-        localrank = [None] * self.ldim
+        localcoords = [None] * self.ldim
 
         # Necessary if vector coeffs is distributed across processes
         if not field.coeffs.ghost_regions_in_sync:
@@ -193,17 +193,19 @@ class TensorFemSpace( FemSpace ):
             bases[j] = basis
             index[j] = slice( span-degree, span+1 )
             if self.vector_space.parallel:
-                localrank[j] = np.searchsorted(self.vector_space.cart.global_ends[j], span-degree)
+                localcoords[j] = np.searchsorted(self.vector_space.cart.global_ends[j], span-degree)
         
+
+        localrank = self.vector_space.cart.coords_to_rank(localcoords)
         # Get contiguous copy of the spline coefficients required for evaluation
-        results = np.zeros(outn,), dtype=self.vector_space._dtype)
+        results = np.zeros((outn,), dtype=self.vector_space._dtype)
 
         index  = tuple( index )
         coeffs = field.coeffs[index].copy()
         if weights:
             coeffs *= weights[index]
 
-        if not self.vector_space.parallel or self.vector_space.cart.coords == localrank:
+        if not self.vector_space.parallel or self.vector_space.cart.coords == localcoords:
             for i in range(outn):
                 # Evaluation of multi-dimensional spline
                 # TODO: optimize
@@ -230,8 +232,7 @@ class TensorFemSpace( FemSpace ):
             results = postproc(results)
         
         if self.vector_space.parallel:
-            # TODO: switch to bcast maybe?
-            results = self.vector_space.cart.comm.allreduce(results)
+            results = self.vector_space.cart.comm.bcast(results, root=localrank)
         
         return results
 
