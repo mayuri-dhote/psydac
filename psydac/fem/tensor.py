@@ -16,7 +16,7 @@ from psydac.fem.basic      import FemSpace, FemField
 from psydac.fem.splines    import SplineSpace
 from psydac.fem.grid       import FemAssemblyGrid
 from psydac.ddm.cart       import CartDecomposition
-from psydac.core.bsplines  import find_span, basis_funs, basis_funs_1st_der
+from psydac.core.bsplines  import find_span, basis_funs, basis_funs_1st_der, basis_funs_all_ders
 
 #===============================================================================
 class TensorFemSpace( FemSpace ):
@@ -140,40 +140,32 @@ class TensorFemSpace( FemSpace ):
     @property
     def is_product(self):
         return False
-
-    #--------------------------------------------------------------------------
-    # Abstract interface: evaluation methods
-    #--------------------------------------------------------------------------
-    def eval_field( self, field, *eta , weights=None):
-
+    
+    def eval_derivatives(self, field, deriv, *eta, weights=None, postproc=None):
         assert isinstance( field, FemField )
         assert field.space is self
         assert len( eta ) == self.ldim
-        if weights:
+        if weights is not None:
             assert weights.space == field.coeffs.space
-
-        bases = []
-        index = []
+        
+        bases = [None] * self.ldim
+        index = [None] * self.ldim
+        localrank = [None] * self.ldim
 
         # Necessary if vector coeffs is distributed across processes
         if not field.coeffs.ghost_regions_in_sync:
             field.coeffs.update_ghost_regions()
+        
+        for i, (x, space) in enumerate(zip( eta, self.spaces )):
 
-        skip = False
-        for (x, xlim, space) in zip( eta, self.eta_lims, self.spaces ):
+            maxderiv = max([d[i] for d in deriv])
 
             domain = space.domain
 
             if space.periodic:
-                domainsize = domain[1] - domain[0]
-                while domain[0] > x:
-                    x += domainsize
-                while domain[1] <= x:
-                    x -= domainsize
+                x = np.mod(x - domain[0], domain[1] - domain[0]) + domain[0]
 
-            if x > domain[1] or x < domain[0]:
-                skip = True
-                break
+            x = np.clip(x, domain[0], domain[1])
 
             knots  = space.knots
             degree = space.degree
@@ -188,102 +180,66 @@ class TensorFemSpace( FemSpace ):
             if x == domain[1] and x != knots[-1-degree]:
                 span -= 1
             #-------------------------------------------------#
-            basis  = basis_funs( knots, degree, x, span )
+            basis  = basis_funs_all_ders( knots, degree, x, span, maxderiv )
 
             # If needed, rescale B-splines to get M-splines
             if space.basis == 'M':
                 basis *= space.scaling_array[span-degree : span+1]
+            
+            bases[i] = basis
+            index[i] = slice( span-degree, span+1 )
+            if self.vector_space.parallel:
+                localrank[i] = np.searchsorted(self.vector_space.cart.global_ends[i], span-degree)
+        
+        # Get contiguous copy of the spline coefficients required for evaluation
+        results = np.zeros((len(deriv),), dtype=self.vector_space._dtype)
 
-            bases.append( basis )
-            index.append( slice( span-degree, span+1 ) )
+        index  = tuple( index )
+        coeffs = field.coeffs[index].copy()
+        if weights:
+            coeffs *= weights[index]
 
-        if skip:
-            return np.zeros((), dtype=field.coeffs.dtype)
-        else:
-            # Get contiguous copy of the spline coefficients required for evaluation
-            index  = tuple( index )
-            coeffs = field.coeffs[index].copy()
-            if weights:
-                coeffs *= weights[index]
+        if not self.vector_space.parallel or self.vector_space.cart.coords == localrank:
+            for i, line in enumerate(deriv):
+                # Evaluation of multi-dimensional spline
+                # TODO: optimize
 
-            # Evaluation of multi-dimensional spline
-            # TODO: optimize
+                # Option 1: contract indices one by one and store intermediate results
+                #   - Pros: small number of Python iterations = ldim
+                #   - Cons: we create ldim-1 temporary objects of decreasing size
+                #
+                res = coeffs
+                for d, basis in zip(line, bases[::-1]):
+                    res = np.dot( res, basis[d,:] )
 
-            # Option 1: contract indices one by one and store intermediate results
-            #   - Pros: small number of Python iterations = ldim
-            #   - Cons: we create ldim-1 temporary objects of decreasing size
-            #
-            res = coeffs
-            for basis in bases[::-1]:
-                res = np.dot( res, basis )
+                #        # Option 2: cycle over each element of 'coeffs' (touched only once)
+                #        #   - Pros: no temporary objects are created
+                #        #   - Cons: large number of Python iterations = number of elements in 'coeffs'
+                #        #
+                #        res = 0.0
+                #        for idx,c in np.ndenumerate( coeffs ):
+                #            ndbasis = np.prod( [b[d,i] for i,b,d in zip( idx, bases, line )] )
+                #            res    += c * ndbasis
+                results[i] = res
+        
+        if postproc is not None:
+            results = postproc(results)
+        
+        if self.vector_space.parallel:
+            # TODO: switch to bcast maybe?
+            results = self.vector_space.cart.comm.allreduce(results)
+        
+        return results
 
-    #        # Option 2: cycle over each element of 'coeffs' (touched only once)
-    #        #   - Pros: no temporary objects are created
-    #        #   - Cons: large number of Python iterations = number of elements in 'coeffs'
-    #        #
-    #        res = 0.0
-    #        for idx,c in np.ndenumerate( coeffs ):
-    #            ndbasis = np.prod( [b[i] for i,b in zip( idx, bases )] )
-    #            res    += c * ndbasis
-
-            return res
+    #--------------------------------------------------------------------------
+    # Abstract interface: evaluation methods
+    #--------------------------------------------------------------------------
+    def eval_field( self, field, *eta , weights=None):
+        return np.asscalar(self.eval_derivatives(field, [[0] * len(eta)], *eta, weights=weights))
 
     # ...
     def eval_field_gradient( self, field, *eta , weights=None):
-
-        assert isinstance( field, FemField )
-        assert field.space is self
-        assert len( eta ) == self.ldim
-
-        bases_0 = []
-        bases_1 = []
-        index   = []
-
-        for (x, xlim, space) in zip( eta, self.eta_lims, self.spaces ):
-
-            knots   = space.knots
-            degree  = space.degree
-            span    =  find_span( knots, degree, x )
-            #-------------------------------------------------#
-            # Fix span for boundaries between subdomains      #
-            #-------------------------------------------------#
-            # TODO: Use local knot sequence instead of global #
-            #       one to get correct span in all situations #
-            #-------------------------------------------------#
-            if x == xlim[1] and x != knots[-1-degree]:
-                span -= 1
-            #-------------------------------------------------#
-            basis_0 = basis_funs( knots, degree, x, span )
-            basis_1 = basis_funs_1st_der( knots, degree, x, span )
-
-            # If needed, rescale B-splines to get M-splines
-            if space.basis == 'M':
-                scaling  = space.scaling_array[span-degree : span+1]
-                basis_0 *= scaling
-                basis_1 *= scaling
-
-            # Determine local span
-            wrap_x   = space.periodic and x > xlim[1]
-            loc_span = span - space.nbasis if wrap_x else span
-
-            bases_0.append( basis_0 )
-            bases_1.append( basis_1 )
-            index.append( slice( loc_span-degree, loc_span+1 ) )
-
-        # Get contiguous copy of the spline coefficients required for evaluation
-        index  = tuple( index )
-        coeffs = field.coeffs[index].copy()
-
-        # Evaluate each component of the gradient using algorithm described in "Option 1" above
-        grad = []
-        for d in range( self.ldim ):
-            bases = [(bases_1[d] if i==d else bases_0[i]) for i in range( self.ldim )]
-            res   = coeffs
-            for basis in bases[::-1]:
-                res = np.dot( res, basis )
-            grad.append( res )
-
-        return grad
+        return self.eval_derivatives(field, [[i==j for j in range(len(eta))] for i in range(len(eta))], *eta, weights=weights)
 
     # ...
     def integral( self, f ):
