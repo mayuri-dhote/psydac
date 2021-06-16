@@ -141,12 +141,16 @@ class TensorFemSpace( FemSpace ):
     def is_product(self):
         return False
     
-    def eval_derivatives(self, field, deriv, *eta, weights=None, postproc=None):
+    def eval_derivatives(self, field, outn, deriv, *eta, weights=None, postproc=None):
         assert isinstance( field, FemField )
         assert field.space is self
         assert len( eta ) == self.ldim
         if weights is not None:
             assert weights.space == field.coeffs.space
+        
+        if isinstance(deriv, list) or isinstance(deriv, tuple):
+            outn = len(deriv)
+            deriv = lambda i,j: deriv[i][j]
         
         bases = [None] * self.ldim
         index = [None] * self.ldim
@@ -156,9 +160,9 @@ class TensorFemSpace( FemSpace ):
         if not field.coeffs.ghost_regions_in_sync:
             field.coeffs.update_ghost_regions()
         
-        for i, (x, space) in enumerate(zip( eta, self.spaces )):
+        for j, (x, space) in enumerate(zip( eta, self.spaces )):
 
-            maxderiv = max([d[i] for d in deriv])
+            maxderiv = max([deriv(i,j) for i in range(outn)])
 
             domain = space.domain
 
@@ -186,13 +190,13 @@ class TensorFemSpace( FemSpace ):
             if space.basis == 'M':
                 basis *= space.scaling_array[span-degree : span+1]
             
-            bases[i] = basis
-            index[i] = slice( span-degree, span+1 )
+            bases[j] = basis
+            index[j] = slice( span-degree, span+1 )
             if self.vector_space.parallel:
-                localrank[i] = np.searchsorted(self.vector_space.cart.global_ends[i], span-degree)
+                localrank[j] = np.searchsorted(self.vector_space.cart.global_ends[j], span-degree)
         
         # Get contiguous copy of the spline coefficients required for evaluation
-        results = np.zeros((len(deriv),), dtype=self.vector_space._dtype)
+        results = np.zeros(outn,), dtype=self.vector_space._dtype)
 
         index  = tuple( index )
         coeffs = field.coeffs[index].copy()
@@ -200,7 +204,7 @@ class TensorFemSpace( FemSpace ):
             coeffs *= weights[index]
 
         if not self.vector_space.parallel or self.vector_space.cart.coords == localrank:
-            for i, line in enumerate(deriv):
+            for i in range(outn):
                 # Evaluation of multi-dimensional spline
                 # TODO: optimize
 
@@ -209,7 +213,7 @@ class TensorFemSpace( FemSpace ):
                 #   - Cons: we create ldim-1 temporary objects of decreasing size
                 #
                 res = coeffs
-                for d, basis in zip(line, bases[::-1]):
+                for d, basis in zip(range(self.vector_space.ndim), bases[::-1]):
                     res = np.dot( res, basis[d,:] )
 
                 #        # Option 2: cycle over each element of 'coeffs' (touched only once)
@@ -218,7 +222,7 @@ class TensorFemSpace( FemSpace ):
                 #        #
                 #        res = 0.0
                 #        for idx,c in np.ndenumerate( coeffs ):
-                #            ndbasis = np.prod( [b[d,i] for i,b,d in zip( idx, bases, line )] )
+                #            ndbasis = np.prod( [b[deriv(i,j),k] for k,b,j in zip( idx, bases, range(self.vector_space.ndim) )] )
                 #            res    += c * ndbasis
                 results[i] = res
         
@@ -235,11 +239,11 @@ class TensorFemSpace( FemSpace ):
     # Abstract interface: evaluation methods
     #--------------------------------------------------------------------------
     def eval_field( self, field, *eta , weights=None):
-        return np.asscalar(self.eval_derivatives(field, [[0] * len(eta)], *eta, weights=weights))
+        return np.asscalar(self.eval_derivatives(field, 1, (lambda i,j: 0), *eta, weights=weights))
 
     # ...
     def eval_field_gradient( self, field, *eta , weights=None):
-        return self.eval_derivatives(field, [[i==j for j in range(len(eta))] for i in range(len(eta))], *eta, weights=weights)
+        return self.eval_derivatives(field, self.vector_space.ndim, (lambda i,j: 1 if i==j else 0), *eta, weights=weights)
 
     # ...
     def integral( self, f ):
