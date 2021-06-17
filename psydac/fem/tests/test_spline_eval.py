@@ -138,12 +138,12 @@ def run_spline_eval(comm, domain, ncells, degree, periodic, seed):
     np.random.seed(seed)
 
     dim = len(ncells)
-    vdom = [np.array(d) for d in domain]
+    vdom = (np.array([d[0] for d in domain]), np.array([d[1] for d in domain]))
 
     # scale at least linearly with the dimension
-    random_gridpoints = dim*10
-    random_points = dim*100
-    random_overall = dim*100
+    random_gridpoints = dim*5
+    random_points = dim*20
+    # random_overall = dim*100
 
     breaks = [np.linspace(*lims, num=n+1) for lims, n in zip(domain, ncells)]
 
@@ -152,7 +152,7 @@ def run_spline_eval(comm, domain, ncells, degree, periodic, seed):
     
     # spline space
     Vp = TensorFemSpace(*Ns, comm=comm)
-    Vs = TensorFemSpace(*Ns, comm=comm)
+    Vs = TensorFemSpace(*Ns)
 
     # build data slices in serial and parallel
     slicep = tuple(slice(pad, -pad) for pad in Vp.vector_space.pads)
@@ -166,13 +166,19 @@ def run_spline_eval(comm, domain, ncells, degree, periodic, seed):
 
     coeffss = StencilVector(Vs.vector_space)
     coeffss._data[slices] = coeffs
+    coeffss.update_ghost_regions()
+
     coeffsp = StencilVector(Vp.vector_space)
     coeffsp._data[slicep] = coeffs[subslice]
+    coeffsp.update_ghost_regions()
 
     weightss = StencilVector(Vs.vector_space)
     weightss._data[slices] = weights
+    weightss.update_ghost_regions()
+
     weightsp = StencilVector(Vp.vector_space)
     weightsp._data[slicep] = weights[subslice]
+    weightsp.update_ghost_regions()
 
     fieldp = FemField(Vp, coeffs=coeffsp)
     fields = FemField(Vs, coeffs=coeffss)
@@ -188,15 +194,15 @@ def run_spline_eval(comm, domain, ncells, degree, periodic, seed):
     testpoints += [np.array([g[r] for g, r in zip(breaks, np.random.randint(breaksize))]) for _ in range(random_gridpoints)]
     
     # random points inside the domain
-    testpoints += np.random.random((random_points, dim)) * (vdom[1] - vdom[0]) + vdom[0]
+    testpoints += list(np.random.random((random_points, dim)) * (vdom[1] - vdom[0]) + vdom[0])
 
-    # random points everywhere
-    testpoints += np.random.randn((random_overall, dim)) * 3 * (vdom[1] - vdom[0]) + vdom[0]
+    # random points everywhere (deactivated)
+    # testpoints += list(np.random.standard_normal((random_overall, dim)) * 100 * (vdom[1] - vdom[0]) + vdom[0])
 
     for point in testpoints:
         assert np.allclose(Vp.eval_field(fieldp, *point), reference_eval_field(Vs, fields, *point), 1e-12, 1e-12)
         assert np.allclose(Vp.eval_field_gradient(fieldp, *point), reference_eval_field_gradient(Vs, fields, *point), 1e-12, 1e-12)
-        assert np.allclose(Vp.eval_field(fieldp, *point, weightsp), reference_eval_field(Vs, fields, *point, weightss), 1e-12, 1e-12)
+        assert np.allclose(Vp.eval_field(fieldp, *point, weights=weightsp), reference_eval_field(Vs, fields, *point, weights=weightss), 1e-12, 1e-12)
 
 @pytest.mark.parametrize('domain', [(0, 1), (-2, 3)])
 @pytest.mark.parametrize('ncells', [11, 37])
