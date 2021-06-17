@@ -10,7 +10,7 @@ import numpy as np
 import itertools
 import h5py
 
-from psydac.linalg.stencil import StencilVectorSpace
+from psydac.linalg.stencil import StencilVectorSpace, StencilVector
 from psydac.linalg.kron    import kronecker_solve
 from psydac.fem.basic      import FemSpace, FemField
 from psydac.fem.splines    import SplineSpace
@@ -142,11 +142,47 @@ class TensorFemSpace( FemSpace ):
         return False
     
     def eval_derivatives(self, field, outn, deriv, *eta, weights=None, postproc=None):
+        """
+        Evaluates this TensorFemSpace or its derivatives with the given FemField at the given position eta.
+        This function can evaluate different derivative combinations and output them in a vector.
+        E.g. for the gradient in 3D, one would need:
+        [[1,0,0], [0,1,0], [0,0,1]] for nderiv (taking the 0-th and the 1st derivative in the directions),
+        and one would get a 3-element vector back.
+
+        Parameters
+        ----------
+        field : FemField
+            The field for the spline coefficients.
+        
+        outn : int
+            The number of output slots. Ignored, if deriv is an array.
+
+        deriv : (list | tuple) | callable
+            If this is a callable, it should take two arguments. The first argument is the position in the output vector, the second argument the current direction in the TensorFemSpace. It should output the derivative needed.
+            If this is a list/tuple, the behavior is the same, but it is the first and second index instead of the first and second argument.
+        
+        eta : list of int
+            The position to evaluate at.
+        
+        weights : NoneType | StencilVector
+            An optional weight vector which will be multiplied with the FemSpace coefficients.
+        
+        postproc : NoneType | callable
+            A function which is called on the results vector before the data is broadcasted via MPI.
+            (can be used to slightly reduce the communication volume, i.e. by transferring the divergence directly, instead of the gradient and then forming the divergence locally)
+        
+        Returns
+        -------
+        ndarray ( | any )
+            The resulting array (or anything, if postproc changed it). It has the same dtype as the vector space of this TensorFemSpace.
+        """
+
         assert isinstance( field, FemField )
         assert field.space is self
         assert len( eta ) == self.ldim
         if weights is not None:
-            assert weights.space == field.coeffs.space
+            assert isinstance(weights, StencilVector)
+            assert weights.space is field.coeffs.space
         
         if isinstance(deriv, list) or isinstance(deriv, tuple):
             outn = len(deriv)
