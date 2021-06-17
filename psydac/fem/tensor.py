@@ -161,14 +161,14 @@ class TensorFemSpace( FemSpace ):
             field.coeffs.update_ghost_regions()
         
         for j, (x, space) in enumerate(zip( eta, self.spaces )):
-
             maxderiv = max([deriv(i,j) for i in range(outn)])
 
             domain = space.domain
 
+            # handle out-of-boundary points somehow (TODO: remove?)
             if space.periodic:
                 x = np.mod(x - domain[0], domain[1] - domain[0]) + domain[0]
-
+            
             x = np.clip(x, domain[0], domain[1])
 
             knots  = space.knots
@@ -190,16 +190,24 @@ class TensorFemSpace( FemSpace ):
             if space.basis == 'M':
                 basis *= space.scaling_array[span-degree : span+1]
             
+            # Determine local span
+            wrap_x   = space.periodic and x > domain[1]
+            loc_span = span - space.nbasis if wrap_x else span
+            
             bases[j] = basis
-            index[j] = slice( span-degree, span+1 )
+            index[j] = slice( loc_span-degree, loc_span+1 )
             if self.vector_space.parallel:
-                localcoords[j] = np.searchsorted(self.vector_space.cart.global_ends[j], span-degree)
+                localcoords[j] = np.searchsorted(self.vector_space.cart.global_ends[j], loc_span-degree)
         
-
-        localrank = self.vector_space.cart.coords_to_rank(localcoords)
+        # retrieve rank from coordinates
+        if self.vector_space.parallel:
+            localrank = self.vector_space.cart.coords_to_rank(localcoords)
+        else:
+            localrank = 0
+        
         # Get contiguous copy of the spline coefficients required for evaluation
-        results = np.zeros((outn,), dtype=self.vector_space._dtype)
-
+        results = np.zeros((outn,), dtype=self.vector_space.dtype)
+        
         index  = tuple( index )
         coeffs = field.coeffs[index].copy()
         if weights:
@@ -215,8 +223,8 @@ class TensorFemSpace( FemSpace ):
                 #   - Cons: we create ldim-1 temporary objects of decreasing size
                 #
                 res = coeffs
-                for d, basis in zip(range(self.vector_space.ndim), bases[::-1]):
-                    res = np.dot( res, basis[d,:] )
+                for j, basis in enumerate(bases[::-1]):
+                    res = np.dot( res, basis[deriv(i,self.vector_space.ndim-1-j),:] )
 
                 #        # Option 2: cycle over each element of 'coeffs' (touched only once)
                 #        #   - Pros: no temporary objects are created
@@ -226,6 +234,7 @@ class TensorFemSpace( FemSpace ):
                 #        for idx,c in np.ndenumerate( coeffs ):
                 #            ndbasis = np.prod( [b[deriv(i,j),k] for k,b,j in zip( idx, bases, range(self.vector_space.ndim) )] )
                 #            res    += c * ndbasis
+
                 results[i] = res
         
         if postproc is not None:
@@ -240,7 +249,7 @@ class TensorFemSpace( FemSpace ):
     # Abstract interface: evaluation methods
     #--------------------------------------------------------------------------
     def eval_field( self, field, *eta , weights=None):
-        return np.asscalar(self.eval_derivatives(field, 1, (lambda i,j: 0), *eta, weights=weights))
+        return self.eval_derivatives(field, 1, (lambda i,j: 0), *eta, weights=weights).item()
 
     # ...
     def eval_field_gradient( self, field, *eta , weights=None):
