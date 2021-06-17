@@ -281,12 +281,14 @@ class CartDecomposition():
         """
         assert self.coords_exist(coords)
 
+        # deal with periodicity
         coords = [c%d if p else c for c,p,d in zip(coords, self._periods, self._dims)]
 
+        # re-reverse axes, if needed
         if self._reverse_axis is not None:
             coords[self._reverse_axis] = self._dims[self._reverse_axis] - coords[self._reverse_axis] - 1
 
-        return self._comm_cart.Get_rank(rank=coords)
+        return self._comm_cart.Get_cart_rank(coords)
 
     #---------------------------------------------------------------------------
     def get_shift_info( self, direction, disp ):
