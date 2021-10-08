@@ -85,7 +85,6 @@ class CartDecomposition():
         # ...
         self._ndims = len( npts )
         # ...
-
         # ...
         self._size = comm.Get_size()
         self._rank = comm.Get_rank()
@@ -576,7 +575,7 @@ class CartDataExchanger:
 
         # Shortcuts
         cart = self._cart
-        comm = self._comm
+        comm = self._comm_cart
 
         # Choose non-negative invertible function tag(disp) >= 0
         # NOTES:
@@ -606,7 +605,7 @@ class CartDataExchanger:
         # Wait for end of data exchange (MPI_WAITALL)
         MPI.Request.Waitall( requests )
 
-        comm.Barrier()
+#        comm.Barrier()
 
     #---------------------------------------------------------------------------
     # Private methods
