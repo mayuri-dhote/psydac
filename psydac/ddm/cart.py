@@ -537,6 +537,7 @@ class CartDataExchanger:
 
         self._cart = cart
         self._comm = cart.comm_cart
+        self._requests = {}
 
     #---------------------------------------------------------------------------
     # Public interface
@@ -548,6 +549,40 @@ class CartDataExchanger:
     def get_recv_type( self, direction, disp ):
         return self._recv_types[direction, disp]
 
+    def prepare_communications( self, array):
+
+
+        # Shortcuts
+        cart = self._cart
+        comm = cart._comm_cart
+
+        # Choose non-negative invertible function tag(disp) >= 0
+        # NOTES:
+        #   . different values of disp must return different tags!
+        #   . tag at receiver must match message tag at sender
+        tag = lambda disp: 42+disp
+
+        # Requests' handles
+        for direction in range(cart._ndims):
+            self._requests[direction] = []
+            for disp in [-1,1]:
+                info     = cart.get_shift_info( direction, disp )
+                recv_typ = self.get_recv_type ( direction, disp )
+                recv_buf = (array, 1, recv_typ)
+                recv_req = comm.Recv_init( recv_buf, info['rank_source'], tag(disp) )
+
+                info     = cart.get_shift_info( direction, disp )
+                send_typ = self.get_send_type ( direction, disp )
+                send_buf = (array, 1, send_typ)
+                send_req = comm.Send_init( send_buf, info['rank_dest'], tag(disp) )
+
+                self._requests[direction].extend([recv_req, send_req])
+
+    def update_ghost_regions_v2( self ):
+
+        for direction in range(self._cart._ndims):
+                MPI.Prequest.Startall( self._requests[direction] )
+                MPI.Prequest.Waitall( self._requests[direction] )
     # ...
     def update_ghost_regions( self, array, *, direction=None ):
         """
@@ -575,7 +610,7 @@ class CartDataExchanger:
 
         # Shortcuts
         cart = self._cart
-        comm = self._comm_cart
+        comm = cart._comm_cart
 
         # Choose non-negative invertible function tag(disp) >= 0
         # NOTES:
