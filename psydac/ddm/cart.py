@@ -560,7 +560,7 @@ class CartDataExchanger:
         # NOTES:
         #   . different values of disp must return different tags!
         #   . tag at receiver must match message tag at sender
-        tag = lambda disp: 42+disp
+        tag = lambda disp: 42+disp*(direction+1)
 
         # Requests' handles
         for direction in range(cart._ndims):
